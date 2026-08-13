@@ -1,0 +1,6 @@
+id=xiaomi_mipad6pro_overlay
+name=Xiaomi Pad 6 Pro GSI Overlay
+version=v1.0.0
+versionCode=1
+author=vendor_hardware_overlay
+description=Treble hardware overlays for Xiaomi Pad 6 Pro (liuqin): auto brightness, 144Hz, corners, power profile (OS3.0.7.0).

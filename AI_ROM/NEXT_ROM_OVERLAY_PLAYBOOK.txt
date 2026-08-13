@@ -1,0 +1,277 @@
+Xiaomi Pad 6 Pro (liuqin) — next-ROM overlay playbook
+=====================================================
+
+Use this when a new official fastboot ROM drops and you need to refresh
+Xiaomi/MiPad6Pro + Xiaomi/MiPad6Pro-SystemUI in this vendor_hardware_overlay
+tree (TrebleDroid / phh GSI overlays).
+
+Do NOT extract the GSI .img.xz. The overlay is built from STOCK vendor/product,
+then used on a GSI (EvoX, TrebleDroid, etc.).
+
+Device
+------
+  Codename:          liuqin
+  Marketing name:    Xiaomi Pad 6 Pro
+  Model:             23046RP50C
+  Folder names:      Xiaomi/MiPad6Pro
+                     Xiaomi/MiPad6Pro-SystemUI
+  Package names:     me.phh.treble.overlay.xiaomi.mipad6pro
+                     me.phh.treble.overlay.xiaomi.mipad6pro.systemui
+  mk names:          treble-overlay-xiaomi-mipad6pro
+                     treble-overlay-xiaomi-mipad6pro-systemui
+  Match property:    ro.vendor.build.fingerprint = +Xiaomi/liuqin*
+  Priority:          1310 (framework + SystemUI, same number)
+  Display:           2880x1800 LCD, 144 Hz, ~277 dpi, Wi-Fi only (no modem)
+  Battery:           8600 mAh
+  First dump used:   ROM/liuqin_images_OS3.0.7.0.VMYCNXM_15.0
+                     vendor fp Xiaomi/liuqin/liuqin:12/SKQ1.230401.001/OS3.0.7.0.VMYCNXM:user/release-keys
+
+Host notes (this machine)
+-------------------------
+  Windows + WSL2 Ubuntu. Git autocrlf=true, so *.sh in the repo has CRLF.
+  Always sed 's/\r$//' before running bash scripts, or keep copies in /tmp.
+  Do NOT sudo in WSL. Extract .deb packages into ROM/tools instead.
+  E: is /mnt/e in WSL.
+  Windows Java (Temurin) cannot load build/signapk/libconscrypt_openjdk_jni.so
+  (that .so is Linux). Sign with the Linux JRE in ROM/tools/jre.
+
+What is already in ROM/tools (reuse these)
+------------------------------------------
+  lpunpack.py          unix3dgforce lpunpack
+                       https://raw.githubusercontent.com/unix3dgforce/lpunpack/master/lpunpack.py
+                       Handles sparse super.img. First --info pass writes
+                       <rom>/images/super.unsparse.img (~9 GB). Reuse that.
+
+  erofs/               dump.erofs + fsck.erofs + libs, extracted from Ubuntu debs
+                       (erofs-utils, libdeflate0, liblz4-1, liblzma5,
+                       libselinux1, libzstd1, zlib1g)
+                       Vendor/product/odm/system on HyperOS are EROFS, not ext4.
+                       debugfs will say "contains a erofs file system" and fail.
+
+  apktool.jar          iBotPeaches Apktool 2.12.1
+                       Run with Windows Java:
+                         java -jar ROM\tools\apktool.jar d -f --no-src -o OUT APK
+
+  xmlstarlet/          xmlstarlet + libxml2-16 + libxslt1.1 (Ubuntu debs)
+                       Needed by tests/tests.sh
+
+  jre/                 Temurin 21 Linux x64 JRE
+                       https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jre/hotspot/normal/eclipse?project=jdk
+                       Used only to run build/signapk/signapk.jar
+
+Repo-local (already in vendor_hardware_overlay, not ROM/)
+  build/aapt           Linux aapt. Needs LD_LIBRARY_PATH=build (libc++.so)
+  build/android.jar
+  build/signapk/signapk.jar + libconscrypt_openjdk_jni.so
+  build/keys/platform.pk8 + platform.x509.pem
+  tests/tests.sh, tests/knownKeys, tests/blacklist
+  overlay.mk
+
+If tools/ is missing, recreate with the same downloads. apt-get download +
+dpkg-deb -x into ROM/tools/<name> works without sudo. Package names drift
+(Ubuntu "libxml2" became "libxml2-16").
+
+What to drop in when a new ROM arrives
+--------------------------------------
+  1. Official Xiaomi fastboot ROM folder, same layout as
+       ROM/liuqin_images_OS3.0.7.0.VMYCNXM_15.0/
+     Must contain images/super.img (sparse, magic 3A FF 26 ED).
+  2. Optional: new GSI .img.xz. Do not unpack it.
+
+  Confirm product is still liuqin (flash_all.sh / misc.txt / odm build.prop).
+  If Xiaomi changes fingerprint prefix away from Xiaomi/liuqin*, update
+  AndroidManifest.xml requiredSystemPropertyValue.
+
+Pipeline
+--------
+Work in WSL. Paths below assume repo at
+  /mnt/e/Data/Source/vendor_hardware_overlay
+and a new dump at
+  ROM/<new_rom_folder>/images/super.img
+
+A. Unsparse + list partitions
+  python3 ROM/tools/lpunpack.py --info ROM/<new>/images/super.img
+  This creates ROM/<new>/images/super.unsparse.img if the image is sparse.
+  After that, point lpunpack at the unsparse file (much faster).
+
+  Expected slot 0 names on liuqin: odm_a, product_a, system_a, system_ext_a,
+  vendor_a, vendor_dlkm_a, mi_ext_a. Slot b is empty on this dump style.
+
+B. Extract logical images (use unsparse super)
+  python3 ROM/tools/lpunpack.py -p vendor_a,odm_a,product_a \
+      ROM/<new>/images/super.unsparse.img ROM/extracted
+  system_a / system_ext_a only if you need framework-res.apk. Usually not.
+
+  Sizes from OS3.0.7.0 (order-of-magnitude check):
+    odm ~470 MB, vendor ~1.4 GB, product ~4.3 GB, system ~720 MB
+
+C. Export LD_LIBRARY_PATH for erofs
+  EROFS=ROM/tools/erofs
+  export LD_LIBRARY_PATH=$EROFS/usr/lib/x86_64-linux-gnu
+
+  dump.erofs --ls --path=/overlay ROM/extracted/vendor_a.img
+  dump.erofs --ls --path=/overlay ROM/extracted/product_a.img
+  dump.erofs --cat --path=/build.prop ROM/extracted/vendor_a.img \
+      > ROM/extracted/files/props/vendor_build.prop
+  dump.erofs --cat --path=/etc/build.prop ROM/extracted/odm_a.img \
+      > ROM/extracted/files/props/odm_etc_build.prop
+
+D. Pull overlay APKs
+  Vendor /overlay (must have):
+    FrameworksResTarget_Vendor.apk     PRIMARY framework source
+    WifiResTarget.apk                  optional, wifi-resources package
+    WifiResTarget_spf.apk / _cape.apk  optional chip variants
+
+    fsck.erofs --extract=ROM/extracted/files/vendor_fs --path=/overlay \
+        --overwrite --no-preserve ROM/extracted/vendor_a.img
+
+  Product /overlay (must have):
+    DevicesAndroidOverlay.apk          device framework (status bar, corners)
+    DevicesOverlay.apk                 device SystemUI (paddings, handle)
+
+  Product /overlay (read, do not dump wholesale into the GSI overlay):
+    FrameworksResCommon_Sys.apk        QCOM/Xiaomi COMMON phone overlay
+    SystemUIResCommon_Sys.apk          common SystemUI
+    AospFrameworkResOverlay.apk        huge, mostly MIUI
+    AospWifiResOverlay.apk             targets wifi resources, not android
+    SettingsRroDeviceSystemUiOverlay.apk
+    framework-res__tablet__auto_generated_characteristics_rro.apk
+    plus a pile of Miui* overlays — ignore for AOSP GSI
+
+    dump.erofs --cat --path=/overlay/NAME.apk product_a.img > files/product_overlay/NAME.apk
+
+E. Decompile (Windows Java is fine)
+  java -jar ROM\tools\apktool.jar d -f --no-src -o ROM\extracted\decompiled\NAME APK
+
+  Never copy public.xml into Xiaomi/MiPad6Pro. tests.sh fails on //public.
+  Never copy config_dozeComponent (tests/blacklist).
+  Never copy config_mainDisplayShape from DevicesAndroidOverlay — on this
+  dump it is a 1080x2400 PHONE path, wrong for the tablet.
+
+F. Refresh overlay sources (do not recreate from scratch unless missing)
+  Keep Android.mk / AndroidManifest.xml / overlay.mk entries unless the
+  fingerprint prefix or module name must change.
+
+  From FrameworksResTarget_Vendor:
+    res/values/arrays.xml     auto brightness levels + backlight + biometric
+    res/values/bools.xml      take device-true keys only
+    res/values/integers.xml   brightness + bt current + shutdown temp
+    res/values/fractions.xml  config_autoBrightnessAdjustmentMaxGamma
+    res/xml/power_profile.xml copy verbatim (tests: battery.capacity != 1000)
+
+  From DevicesAndroidOverlay:
+    rounded_corner_radius / _top / _bottom     (46px on OS3.0.7.0)
+    status_bar_height*                         (60px on OS3.0.7.0)
+
+  From DevicesOverlay (SystemUI target):
+    rounded_corner_content_padding             (40px)
+    navigation_home_handle_width               (320dp, tablet)
+    navigation_handle_bottom / _radius
+
+  Always set yourself (stock vendor overlay often omits these):
+    config_automatic_brightness_available = true
+      (required by tests.sh if brightness arrays are present)
+    config_defaultPeakRefreshRate = 144
+    config_defaultRefreshRate = 144
+    config_dozeAlwaysOnDisplayAvailable = false     LCD, no AOD
+    config_fillMainBuiltInDisplayCutout = false     no stock cutout path
+    config_voice_capable / sms / mobile_data = false
+    config_showNavigationBar = true
+    config_useDevInputEventForAudioJack = true
+
+  Do NOT copy from FrameworksResCommon_Sys unless you know it is device-true:
+    volte / vt / wfc / hotswap / 5G SA-NSA
+    config_availableColorModes with 256+ MIUI modes
+    config_defaultPeakRefreshRate=240 (wrong for this panel)
+    config_dozeAlwaysOnDisplayAvailable=true (wrong for LCD)
+    networkAttributes / radioAttributes / pinner MIUI font paths
+
+  Every framework key must exist in tests/knownKeys, or the XML must contain
+    I swear it makes sense to set KEY, and I can completely explain why.
+  SystemUI overlay is NOT gated by knownKeys (targetPackage != android).
+
+  Blacklist (never put these in the overlay): see tests/blacklist
+    config_dozeComponent, config_useRoundIcon, config_allowAllRotations, ...
+
+G. Sanity
+  vendor_build.prop still has:
+    ro.product.vendor.device=liuqin
+    ro.vendor.build.fingerprint=Xiaomi/liuqin/liuqin:...
+    ro.vendor.display.type=lcd
+    ro.vendor.display.default_fps=...   (stock default may stay 60; GSI overlay
+                                         forces 144 as peak/default)
+  power_profile battery.capacity still ~8600
+  auto-brightness arrays: levels length == backlight length - 1
+  No public.xml, no color_extraction.xml
+
+H. Test
+  Full tests/tests.sh on Windows checkout is painful: knownKeys is CRLF so
+  grep '^key$' misses every key and the script flags the whole tree.
+  For a local check, strip CR into /tmp/knownKeys and /tmp/blacklist and only
+  scan Xiaomi/MiPad6Pro. See ROM/test_liuqin.sh.
+
+  Also:
+    overlay.mk stays ASCII-sorted, every line ends with \, file ends with
+    a blank line, and every LOCAL_PACKAGE_NAME is listed.
+
+I. Build APKs
+  Must run aapt + signapk under WSL with Linux JRE:
+
+    cd /mnt/e/Data/Source/vendor_hardware_overlay/build
+    export PATH="$PWD:/usr/bin:/bin:$PATH"
+    export LD_LIBRARY_PATH="$PWD:$PWD/signapk"
+    JAVA=../ROM/tools/jre/bin/java
+
+    aapt package -f -F NAME-unsigned.apk \
+        -M ../Xiaomi/MiPad6Pro/AndroidManifest.xml \
+        -S ../Xiaomi/MiPad6Pro/res \
+        -I android.jar
+    "$JAVA" -jar signapk/signapk.jar \
+        keys/platform.x509.pem keys/platform.pk8 \
+        NAME-unsigned.apk NAME.apk
+
+  Or run ROM/build_liuqin.sh after sed -i 's/\r$//' on it.
+
+  Output:
+    build/treble-overlay-xiaomi-mipad6pro.apk
+    build/treble-overlay-xiaomi-mipad6pro-systemui.apk
+
+  Verify:
+    aapt dump badging ...  package name + overlay
+    aapt dump resources ...  brightness / 144 / 8600 still present
+
+J. Flash on an already-installed GSI (no rebuild)
+  adb root
+  adb remount
+  adb push build\treble-overlay-xiaomi-mipad6pro.apk /product/overlay/
+  adb push build\treble-overlay-xiaomi-mipad6pro-systemui.apk /product/overlay/
+  adb reboot
+
+  Rebuild of a TrebleDroid/EvoX GSI from this tree picks them up via overlay.mk.
+
+What you can delete to free disk
+--------------------------------
+  ROM/<rom>/images/super.unsparse.img     ~9 GB, regenerable
+  ROM/extracted/*.img                     partition dumps, regenerable
+  ROM/extracted/decompiled                apktool output, regenerable
+  Keep ROM/tools. Keep the original super.img / ROM folder if you still need it.
+  Do not commit ROM/ (stock images, tools, GSI). Only commit
+    Xiaomi/MiPad6Pro, Xiaomi/MiPad6Pro-SystemUI, overlay.mk
+
+Quick "what changed vs last overlay" checklist
+----------------------------------------------
+  [ ] New FrameworksResTarget_Vendor brightness arrays / integers / power_profile
+  [ ] New DevicesAndroidOverlay status bar / corner px
+  [ ] New DevicesOverlay SystemUI paddings
+  [ ] Fingerprint still Xiaomi/liuqin*
+  [ ] Still Wi-Fi tablet, still LCD, still 144 Hz
+  [ ] knownKeys / blacklist still satisfied
+  [ ] APKs rebuild and aapt dump looks right
+
+First-dump reference (OS3.0.7.0.VMYCNXM) — if a value disappears, this is why
+  vendor /overlay only had 4 apks (FrameworksResTarget_Vendor + 3 WifiRes*)
+  DevicesAndroidOverlay: 46px corners, 60px status bar, AOD false
+  DevicesOverlay: 40px rounded_corner_content_padding, 320dp home handle
+  FrameworksResTarget_Vendor: 0-255 backlight curve, 144 not set in stock
+    (stock common overlay said peak 240 / default 0 — ignore that)
+  No config_mainBuiltInDisplayCutout in device overlays (hole is bezel-ish)
